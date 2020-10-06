@@ -82,7 +82,9 @@ msgstr "Esperando Webhook de Mobbex"
 msgid "Awaiting payment"
 msgstr "Esperando pago"
 
-#: gateway.php:235
+msgid "Order failed (recoverable)"
+msgstr "Orden fallida (recuperable)"
+
 msgid "Order failed"
 msgstr "Orden fallida"
 

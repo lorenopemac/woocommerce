@@ -448,25 +448,30 @@ class WC_Gateway_Mobbex extends WC_Payment_Gateway
             "checkout_body" => $checkout_body,
         ]);
 
-        // Add Customer if Logged In
+        // Add Customer from the Ecommerce
         $current_user = wp_get_current_user();
-        if (0 !== $current_user->ID) {
-            // Get DNI
-            if ($this->custom_dni) {
-                $dni = get_post_meta($order->get_id(), $this->custom_dni, true);
-            } else {
-                $dni = get_post_meta($order->get_id(), '_billing_dni', true);
-            }
+        $checkout_body = array_merge($checkout_body, [
+            "customer" => [
+                "name" => !empty($current_user->display_name) ? $current_user->display_name : $order->get_formatted_billing_full_name(),
+                "email" => !empty($current_user->user_email) ? $current_user->user_email : $order->get_billing_email(),
+            ],
+        ]);
 
-            // Add Customer from the Ecommerce
-            $checkout_body = array_merge($checkout_body, [
-                "customer" => [
-                    "identification" => $dni,
-                    "name" => $current_user->display_name,
-                    "email" => $current_user->user_email,
-                    "uid" => $current_user->ID,
-                ],
-            ]);
+        // Get DNI
+        if ($this->custom_dni) {
+            $dni = get_post_meta($order->get_id(), $this->custom_dni, true);
+        } else {
+            $dni = get_post_meta($order->get_id(), '_billing_dni', true);
+        }
+
+        if (!empty($dni)) {
+            $checkout_body["customer"]["identification"] = $dni;
+        }
+        if (!empty($order->get_billing_phone())) {
+            $checkout_body["customer"]["phone"] = $order->get_billing_phone();
+        }
+        if (!empty($order->get_customer_id()) || !empty($current_user->ID)) {
+            $checkout_body["customer"]["uid"] = !empty($current_user->ID) ? $current_user->ID : $order->get_customer_id();
         }
 
         // Installment filter
@@ -679,14 +684,16 @@ class WC_Gateway_Mobbex extends WC_Payment_Gateway
         $order->save();
 
         // Check status and set
-        if ($status == 2 || $status == 3) {
+        if ($status == 2 || $status == 3 || $status == 100 || $status == 201) {
             $order->update_status('on-hold', __('Awaiting payment', MOBBEX_WC_TEXT_DOMAIN));
-        } else if ($status == 4 || $status >= 200 && $status < 400) {
+        } else if ($status >= 200 && $status < 400) {
             // Set as completed and reduce stock
             // Set Mobbex Order ID to be able to refund.
             // TODO: implement return
             $this->add_fee_or_discount($data['payment']['total'], $order);
             $order->payment_complete($id);
+        } else if (($status >= 400 && $status <= 500 && $status != 401 && $status != 402) || $status == 0) {
+            $order->update_status('failed', __('Order failed (recoverable)', MOBBEX_WC_TEXT_DOMAIN));
         } else {
             $order->update_status('failed', __('Order failed', MOBBEX_WC_TEXT_DOMAIN));
         }
@@ -719,12 +726,30 @@ class WC_Gateway_Mobbex extends WC_Payment_Gateway
 
         $order = wc_get_order($id);
 
-        if ($status == 0 || $status >= 400) {
-            // Try to restore the cart here
-            $redirect = $order->get_cancel_order_url();
-        } else if ($status == 2 || $status == 3 || $status == 4 || $status >= 200 && $status < 400) {
+        if (($status >= 200 && $status < 400) || $status == 2 || $status == 3 || $status == 100 || $status == 201) {
+
             // Redirect
             $redirect = $order->get_checkout_order_received_url();
+
+        } else if (($status >= 400 && $status <= 500 && $status != 401 && $status != 402) || $status == 0) {
+
+            // Set cart lifetime for recovery
+            add_filter('wc_session_expiration', 'mobbex_session_expiration', 1, 1);
+            function mobbex_session_expiration($seconds) {
+                return 60 * 5;
+            }
+            
+            $session = WC()->session;
+            $session->init();
+            $session->set_session_expiration();
+
+            $redirect = wc_get_checkout_url();
+
+        } else {
+            
+            // Try to restore the cart here
+            $redirect = $order->get_cancel_order_url();
+
         }
 
         wp_safe_redirect($redirect);
